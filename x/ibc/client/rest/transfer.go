@@ -1,99 +1,62 @@
 package rest
 
 import (
-	"encoding/hex"
-	"io/ioutil"
 	"net/http"
 
-	"github.com/gorilla/mux"
-	"github.com/tendermint/go-crypto/keys"
-
 	"github.com/cosmos/cosmos-sdk/client/context"
+	clientrest "github.com/cosmos/cosmos-sdk/client/rest"
+	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/cosmos/cosmos-sdk/crypto/keys"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/wire"
+	"github.com/cosmos/cosmos-sdk/types/rest"
 	"github.com/cosmos/cosmos-sdk/x/ibc"
+
+	"github.com/gorilla/mux"
 )
 
 // RegisterRoutes - Central function to define routes that get registered by the main application
-func RegisterRoutes(ctx context.CoreContext, r *mux.Router, cdc *wire.Codec, kb keys.Keybase) {
-	r.HandleFunc("/ibc/{destchain}/{address}/send", TransferRequestHandlerFn(cdc, kb, ctx)).Methods("POST")
+func RegisterRoutes(cliCtx context.CLIContext, r *mux.Router, cdc *codec.Codec, kb keys.Keybase) {
+	r.HandleFunc("/ibc/{destchain}/{address}/send", TransferRequestHandlerFn(cdc, kb, cliCtx)).Methods("POST")
 }
 
-type transferBody struct {
-	// Fees             sdk.Coin  `json="fees"`
-	Amount           sdk.Coins `json:"amount"`
-	LocalAccountName string    `json:"name"`
-	Password         string    `json:"password"`
-	SrcChainID       string    `json:"src_chain_id"`
-	Sequence         int64     `json:"sequence"`
+type transferReq struct {
+	BaseReq rest.BaseReq `json:"base_req"`
+	Amount  sdk.Coins    `json:"amount"`
 }
 
 // TransferRequestHandler - http request handler to transfer coins to a address
-// on a different chain via IBC
-func TransferRequestHandlerFn(cdc *wire.Codec, kb keys.Keybase, ctx context.CoreContext) http.HandlerFunc {
+// on a different chain via IBC.
+func TransferRequestHandlerFn(cdc *codec.Codec, kb keys.Keybase, cliCtx context.CLIContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// collect data
 		vars := mux.Vars(r)
 		destChainID := vars["destchain"]
-		address := vars["address"]
+		bech32Addr := vars["address"]
 
-		var m transferBody
-		body, err := ioutil.ReadAll(r.Body)
+		to, err := sdk.AccAddressFromBech32(bech32Addr)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
-			return
-		}
-		err = cdc.UnmarshalJSON(body, &m)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
+			rest.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		info, err := kb.Get(m.LocalAccountName)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(err.Error()))
+		var req transferReq
+		if !rest.ReadRESTReq(w, r, cdc, &req) {
 			return
 		}
 
-		bz, err := hex.DecodeString(address)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
-			return
-		}
-		to := sdk.Address(bz)
-
-		// build message
-		packet := ibc.NewIBCPacket(info.PubKey.Address(), to, m.Amount, m.SrcChainID, destChainID)
-		msg := ibc.IBCTransferMsg{packet}
-
-		// sign
-		ctx = ctx.WithSequence(m.Sequence)
-		txBytes, err := ctx.SignAndBuild(m.LocalAccountName, m.Password, msg, cdc)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(err.Error()))
+		req.BaseReq = req.BaseReq.Sanitize()
+		if !req.BaseReq.ValidateBasic(w) {
 			return
 		}
 
-		// send
-		res, err := ctx.BroadcastTx(txBytes)
+		from, err := sdk.AccAddressFromBech32(req.BaseReq.From)
 		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
+			rest.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		output, err := cdc.MarshalJSON(res)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
-			return
-		}
+		packet := ibc.NewIBCPacket(from, to, req.Amount, req.BaseReq.ChainID, destChainID)
+		msg := ibc.MsgIBCTransfer{IBCPacket: packet}
 
-		w.Write(output)
+		clientrest.WriteGenerateStdTxResponse(w, cdc, cliCtx, req.BaseReq, []sdk.Msg{msg})
 	}
 }

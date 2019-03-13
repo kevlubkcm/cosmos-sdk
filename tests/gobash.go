@@ -1,51 +1,116 @@
 package tests
 
 import (
+	"fmt"
 	"io"
-	"os/exec"
+	"io/ioutil"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
+	cmn "github.com/tendermint/tendermint/libs/common"
 )
 
-func getCmd(t *testing.T, command string) *exec.Cmd {
+// ExecuteT executes the command, pipes any input to STDIN and return STDOUT,
+// logging STDOUT/STDERR to t.
+// nolint: errcheck
+func ExecuteT(t *testing.T, cmd, input string) (stdout, stderr string) {
+	t.Log("Running", cmn.Cyan(cmd))
 
-	//split command into command and args
-	split := strings.Split(command, " ")
+	// split cmd to name and args
+	split := strings.Split(cmd, " ")
 	require.True(t, len(split) > 0, "no command provided")
-
-	var cmd *exec.Cmd
-	if len(split) == 1 {
-		cmd = exec.Command(split[0])
-	} else {
-		cmd = exec.Command(split[0], split[1:]...)
+	name, args := split[0], []string(nil)
+	if len(split) > 1 {
+		args = split[1:]
 	}
-	return cmd
-}
 
-// Execute the command, return standard output and error, try a few times if requested
-func ExecuteT(t *testing.T, command string) (out string) {
-	cmd := getCmd(t, command)
-	bz, err := cmd.CombinedOutput()
+	proc, err := StartProcess("", name, args)
+	require.NoError(t, err)
+
+	// if input is provided, pass it to STDIN and close the pipe
+	if input != "" {
+		_, err = io.WriteString(proc.StdinPipe, input)
+		require.NoError(t, err)
+		proc.StdinPipe.Close()
+	}
+
+	outbz, errbz, err := proc.ReadAll()
 	if err != nil {
-		panic(err)
+		fmt.Println("Err on proc.ReadAll()", err, args)
 	}
-	require.NoError(t, err, string(bz))
-	out = strings.Trim(string(bz), "\n") //trim any new lines
-	time.Sleep(time.Second)
-	return out
+
+	proc.Wait()
+
+	if len(outbz) > 0 {
+		t.Log("Stdout:", cmn.Green(string(outbz)))
+	}
+
+	if len(errbz) > 0 {
+		t.Log("Stderr:", cmn.Red(string(errbz)))
+	}
+
+	stdout = strings.Trim(string(outbz), "\n")
+	stderr = strings.Trim(string(errbz), "\n")
+
+	return
 }
 
-// Asynchronously execute the command, return standard output and error
-func GoExecuteT(t *testing.T, command string) (cmd *exec.Cmd, pipeIn io.WriteCloser, pipeOut io.ReadCloser) {
-	cmd = getCmd(t, command)
-	pipeIn, err := cmd.StdinPipe()
+// Execute the command, launch goroutines to log stdout/err to t.
+// Caller should wait for .Wait() or .Stop() to terminate.
+func GoExecuteT(t *testing.T, cmd string) (proc *Process) {
+	t.Log("Running", cmn.Cyan(cmd))
+
+	// Split cmd to name and args.
+	split := strings.Split(cmd, " ")
+	require.True(t, len(split) > 0, "no command provided")
+	name, args := split[0], []string(nil)
+	if len(split) > 1 {
+		args = split[1:]
+	}
+
+	// Start process.
+	proc, err := StartProcess("", name, args)
 	require.NoError(t, err)
-	pipeOut, err = cmd.StdoutPipe()
+	return proc
+}
+
+// Same as GoExecuteT but spawns a go routine to ReadAll off stdout.
+func GoExecuteTWithStdout(t *testing.T, cmd string) (proc *Process) {
+	t.Log("Running", cmn.Cyan(cmd))
+
+	// Split cmd to name and args.
+	split := strings.Split(cmd, " ")
+	require.True(t, len(split) > 0, "no command provided")
+	name, args := split[0], []string(nil)
+	if len(split) > 1 {
+		args = split[1:]
+	}
+
+	// Start process.
+	proc, err := CreateProcess("", name, args)
 	require.NoError(t, err)
-	cmd.Start()
-	time.Sleep(time.Second)
-	return cmd, pipeIn, pipeOut
+
+	// Without this, the test halts ?!
+	// (theory: because stdout and/or err aren't connected to anything the process halts)
+	go func(proc *Process) {
+		_, err := ioutil.ReadAll(proc.StdoutPipe)
+		if err != nil {
+			fmt.Println("-------------ERR-----------------------", err)
+			return
+		}
+	}(proc)
+
+	go func(proc *Process) {
+		_, err := ioutil.ReadAll(proc.StderrPipe)
+		if err != nil {
+			fmt.Println("-------------ERR-----------------------", err)
+			return
+		}
+	}(proc)
+
+	err = proc.Cmd.Start()
+	require.NoError(t, err)
+	proc.Pid = proc.Cmd.Process.Pid
+	return proc
 }

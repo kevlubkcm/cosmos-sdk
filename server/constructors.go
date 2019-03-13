@@ -2,41 +2,41 @@ package server
 
 import (
 	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
 
-	abci "github.com/tendermint/abci/types"
-	dbm "github.com/tendermint/tmlibs/db"
-	"github.com/tendermint/tmlibs/log"
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	abci "github.com/tendermint/tendermint/abci/types"
+	dbm "github.com/tendermint/tendermint/libs/db"
+	"github.com/tendermint/tendermint/libs/log"
+	tmtypes "github.com/tendermint/tendermint/types"
 )
 
-// AppCreator lets us lazily initialize app, using home dir
-// and other flags (?) to start
-type AppCreator func(string, log.Logger) (abci.Application, error)
+type (
+	// AppCreator is a function that allows us to lazily initialize an
+	// application using various configurations.
+	AppCreator func(log.Logger, dbm.DB, io.Writer) abci.Application
 
-// AppExporter dumps all app state to JSON-serializable structure
-type AppExporter func(home string, log log.Logger) (json.RawMessage, error)
+	// AppExporter is a function that dumps all app state to
+	// JSON-serializable structure and returns the current validator set.
+	AppExporter func(log.Logger, dbm.DB, io.Writer, int64, bool, []string) (json.RawMessage, []tmtypes.GenesisValidator, error)
+)
 
-// ConstructAppCreator returns an application generation function
-func ConstructAppCreator(appFn func(log.Logger, dbm.DB) abci.Application, name string) AppCreator {
-	return func(rootDir string, logger log.Logger) (abci.Application, error) {
-		dataDir := filepath.Join(rootDir, "data")
-		db, err := dbm.NewGoLevelDB(name, dataDir)
-		if err != nil {
-			return nil, err
-		}
-		app := appFn(logger, db)
-		return app, nil
-	}
+func openDB(rootDir string) (dbm.DB, error) {
+	dataDir := filepath.Join(rootDir, "data")
+	db, err := sdk.NewLevelDB("application", dataDir)
+	return db, err
 }
 
-// ConstructAppExporter returns an application export function
-func ConstructAppExporter(appFn func(log.Logger, dbm.DB) (json.RawMessage, error), name string) AppExporter {
-	return func(rootDir string, logger log.Logger) (json.RawMessage, error) {
-		dataDir := filepath.Join(rootDir, "data")
-		db, err := dbm.NewGoLevelDB(name, dataDir)
-		if err != nil {
-			return nil, err
-		}
-		return appFn(logger, db)
+func openTraceWriter(traceWriterFile string) (w io.Writer, err error) {
+	if traceWriterFile != "" {
+		w, err = os.OpenFile(
+			traceWriterFile,
+			os.O_WRONLY|os.O_APPEND|os.O_CREATE,
+			0666,
+		)
+		return
 	}
+	return
 }

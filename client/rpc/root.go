@@ -1,56 +1,44 @@
 package rpc
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/gorilla/mux"
-	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
 
-	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/context"
+	"github.com/cosmos/cosmos-sdk/types/rest"
+	"github.com/cosmos/cosmos-sdk/version"
 )
-
-const (
-	// one of the following should be provided to verify the connection
-	flagGenesis = "genesis"
-	flagCommit  = "commit"
-	flagValHash = "validator-set"
-)
-
-// XXX: remove this when not needed
-func todoNotImplemented(_ *cobra.Command, _ []string) error {
-	return errors.New("TODO: Command not yet implemented")
-}
-
-// AddCommands adds a number of rpc-related subcommands
-func AddCommands(cmd *cobra.Command) {
-	cmd.AddCommand(
-		initClientCommand(),
-		statusCommand(),
-		blockCommand(),
-		validatorCommand(),
-	)
-}
-
-func initClientCommand() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Initialize light client",
-		RunE:  todoNotImplemented,
-	}
-	cmd.Flags().StringP(client.FlagChainID, "c", "", "ID of chain we connect to")
-	cmd.Flags().StringP(client.FlagNode, "n", "tcp://localhost:46657", "Node to connect to")
-	cmd.Flags().String(flagGenesis, "", "Genesis file to verify header validity")
-	cmd.Flags().String(flagCommit, "", "File with trusted and signed header")
-	cmd.Flags().String(flagValHash, "", "Hash of trusted validator set (hex-encoded)")
-	return cmd
-}
 
 // Register REST endpoints
-func RegisterRoutes(ctx context.CoreContext, r *mux.Router) {
-	r.HandleFunc("/node_info", NodeInfoRequestHandlerFn(ctx)).Methods("GET")
-	r.HandleFunc("/syncing", NodeSyncingRequestHandlerFn(ctx)).Methods("GET")
-	r.HandleFunc("/blocks/latest", LatestBlockRequestHandlerFn(ctx)).Methods("GET")
-	r.HandleFunc("/blocks/{height}", BlockRequestHandlerFn(ctx)).Methods("GET")
-	r.HandleFunc("/validatorsets/latest", LatestValidatorSetRequestHandlerFn(ctx)).Methods("GET")
-	r.HandleFunc("/validatorsets/{height}", ValidatorSetRequestHandlerFn(ctx)).Methods("GET")
+func RegisterRoutes(cliCtx context.CLIContext, r *mux.Router) {
+	r.HandleFunc("/version", CLIVersionRequestHandler).Methods("GET")
+	r.HandleFunc("/node_version", NodeVersionRequestHandler(cliCtx)).Methods("GET")
+	r.HandleFunc("/node_info", NodeInfoRequestHandlerFn(cliCtx)).Methods("GET")
+	r.HandleFunc("/syncing", NodeSyncingRequestHandlerFn(cliCtx)).Methods("GET")
+	r.HandleFunc("/blocks/latest", LatestBlockRequestHandlerFn(cliCtx)).Methods("GET")
+	r.HandleFunc("/blocks/{height}", BlockRequestHandlerFn(cliCtx)).Methods("GET")
+	r.HandleFunc("/validatorsets/latest", LatestValidatorSetRequestHandlerFn(cliCtx)).Methods("GET")
+	r.HandleFunc("/validatorsets/{height}", ValidatorSetRequestHandlerFn(cliCtx)).Methods("GET")
+}
+
+// cli version REST handler endpoint
+func CLIVersionRequestHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(fmt.Sprintf("{\"version\": \"%s\"}", version.Version)))
+}
+
+// connected node version REST handler endpoint
+func NodeVersionRequestHandler(cliCtx context.CLIContext) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		version, err := cliCtx.Query("/app/version", nil)
+		if err != nil {
+			rest.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(version)
+	}
 }

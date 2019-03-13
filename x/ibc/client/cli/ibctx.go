@@ -2,19 +2,17 @@ package cli
 
 import (
 	"encoding/hex"
-	"fmt"
-
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/context"
-
+	"github.com/cosmos/cosmos-sdk/client/utils"
+	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	wire "github.com/cosmos/cosmos-sdk/wire"
-
-	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
+	authtxb "github.com/cosmos/cosmos-sdk/x/auth/client/txbuilder"
 	"github.com/cosmos/cosmos-sdk/x/ibc"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 const (
@@ -23,43 +21,34 @@ const (
 	flagChain  = "chain"
 )
 
-// IBC transfer command
-func IBCTransferCmd(cdc *wire.Codec) *cobra.Command {
+// IBCTransferCmd implements the IBC transfer command.
+func IBCTransferCmd(cdc *codec.Codec) *cobra.Command {
 	cmd := &cobra.Command{
 		Use: "transfer",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.NewCoreContextFromViper().WithDecoder(authcmd.GetAccountDecoder(cdc))
+			txBldr := authtxb.NewTxBuilderFromCLI().WithTxEncoder(utils.GetTxEncoder(cdc))
+			cliCtx := context.NewCLIContext().
+				WithCodec(cdc).
+				WithAccountDecoder(cdc)
 
-			// get the from address
-			from, err := ctx.GetFromAddress()
-			if err != nil {
-				return err
-			}
-
-			// build the message
+			from := cliCtx.GetFromAddress()
 			msg, err := buildMsg(from)
 			if err != nil {
 				return err
 			}
 
-			// get password
-			res, err := ctx.EnsureSignBuildBroadcast(ctx.FromAddressName, msg, cdc)
-			if err != nil {
-				return err
-			}
-
-			fmt.Printf("Committed at block %d. Hash: %s\n", res.Height, res.Hash.String())
-			return nil
+			return utils.GenerateOrBroadcastMsgs(cliCtx, txBldr, []sdk.Msg{msg}, false)
 		},
 	}
 
 	cmd.Flags().String(flagTo, "", "Address to send coins")
 	cmd.Flags().String(flagAmount, "", "Amount of coins to send")
 	cmd.Flags().String(flagChain, "", "Destination chain to send coins")
+
 	return cmd
 }
 
-func buildMsg(from sdk.Address) (sdk.Msg, error) {
+func buildMsg(from sdk.AccAddress) (sdk.Msg, error) {
 	amount := viper.GetString(flagAmount)
 	coins, err := sdk.ParseCoins(amount)
 	if err != nil {
@@ -71,12 +60,12 @@ func buildMsg(from sdk.Address) (sdk.Msg, error) {
 	if err != nil {
 		return nil, err
 	}
-	to := sdk.Address(bz)
+	to := sdk.AccAddress(bz)
 
 	packet := ibc.NewIBCPacket(from, to, coins, viper.GetString(client.FlagChainID),
 		viper.GetString(flagChain))
 
-	msg := ibc.IBCTransferMsg{
+	msg := ibc.MsgIBCTransfer{
 		IBCPacket: packet,
 	}
 

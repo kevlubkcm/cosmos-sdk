@@ -2,25 +2,48 @@
 .DS_Store
 *.swp
 *.swo
+*.swl
+*.swm
+*.swn
 .vscode
+.idea
 
 # Build
 vendor
+vendor-deps
+.vendor-new
 build
 tools/bin/*
 examples/build/*
 docs/_build
+docs/tutorial
+dist
+devtools-stamp
 
 # Data - ideally these don't exist
-examples/basecoin/app/data
 baseapp/data/*
+client/lcd/keys/*
+client/lcd/statik/statik.go
+mytestnet
 
 # Testing
 coverage.txt
 profile.out
 
-### Vagrant ###
+# Vagrant
 .vagrant/
 *.box
 *.log
 vagrant
+
+# IDE
+.idea/
+*.iml
+
+# Graphviz
+dependency-graph.png
+
+# Latex
+*.aux
+*.out
+*.synctex.gz

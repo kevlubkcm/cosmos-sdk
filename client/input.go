@@ -6,46 +6,57 @@ import (
 	"os"
 	"strings"
 
+	"errors"
+
 	"github.com/bgentry/speakeasy"
 	isatty "github.com/mattn/go-isatty"
-	"github.com/pkg/errors"
 )
 
 // MinPassLength is the minimum acceptable password length
 const MinPassLength = 8
 
+var currentStdin *bufio.Reader
+
+func init() {
+	currentStdin = bufio.NewReader(os.Stdin)
+}
+
 // BufferStdin is used to allow reading prompts for stdin
 // multiple times, when we read from non-tty
 func BufferStdin() *bufio.Reader {
-	return bufio.NewReader(os.Stdin)
+	return currentStdin
+}
+
+// OverrideStdin allows to temporarily override stdin
+func OverrideStdin(newStdin *bufio.Reader) (cleanUp func()) {
+	prevStdin := currentStdin
+	currentStdin = newStdin
+	cleanUp = func() {
+		currentStdin = prevStdin
+	}
+	return cleanUp
 }
 
 // GetPassword will prompt for a password one-time (to sign a tx)
 // It enforces the password length
 func GetPassword(prompt string, buf *bufio.Reader) (pass string, err error) {
 	if inputIsTty() {
-		pass, err = speakeasy.Ask(prompt)
+		pass, err = speakeasy.FAsk(os.Stderr, prompt)
 	} else {
 		pass, err = readLineFromBuf(buf)
 	}
+
 	if err != nil {
 		return "", err
 	}
-	if len(pass) < MinPassLength {
-		return "", errors.Errorf("Password must be at least %d characters", MinPassLength)
-	}
-	return pass, nil
-}
 
-// GetSeed will request a seed phrase from stdin and trims off
-// leading/trailing spaces
-func GetSeed(prompt string, buf *bufio.Reader) (seed string, err error) {
-	if inputIsTty() {
-		fmt.Println(prompt)
+	if len(pass) < MinPassLength {
+		// Return the given password to the upstream client so it can handle a
+		// non-STDIN failure gracefully.
+		return pass, fmt.Errorf("password must be at least %d characters", MinPassLength)
 	}
-	seed, err = readLineFromBuf(buf)
-	seed = strings.TrimSpace(seed)
-	return
+
+	return pass, nil
 }
 
 // GetCheckPassword will prompt for a password twice to verify they
@@ -68,7 +79,7 @@ func GetCheckPassword(prompt, prompt2 string, buf *bufio.Reader) (string, error)
 		return "", err
 	}
 	if pass != pass2 {
-		return "", errors.New("Passphrases don't match")
+		return "", errors.New("passphrases don't match")
 	}
 	return pass, nil
 }
@@ -79,8 +90,9 @@ func GetCheckPassword(prompt, prompt2 string, buf *bufio.Reader) (string, error)
 func GetConfirmation(prompt string, buf *bufio.Reader) (bool, error) {
 	for {
 		if inputIsTty() {
-			fmt.Print(fmt.Sprintf("%s [y/n]:", prompt))
+			fmt.Print(fmt.Sprintf("%s [Y/n]: ", prompt))
 		}
+
 		response, err := readLineFromBuf(buf)
 		if err != nil {
 			return false, err
@@ -93,6 +105,19 @@ func GetConfirmation(prompt string, buf *bufio.Reader) (bool, error) {
 			return false, nil
 		}
 	}
+}
+
+// GetString simply returns the trimmed string output of a given reader.
+func GetString(prompt string, buf *bufio.Reader) (string, error) {
+	if inputIsTty() && prompt != "" {
+		PrintPrefixed(prompt)
+	}
+
+	out, err := readLineFromBuf(buf)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // inputIsTty returns true iff we have an interactive prompt,
@@ -111,4 +136,10 @@ func readLineFromBuf(buf *bufio.Reader) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(pass), nil
+}
+
+// PrintPrefixed prints a string with > prefixed for use in prompts.
+func PrintPrefixed(msg string) {
+	msg = fmt.Sprintf("> %s\n", msg)
+	fmt.Fprint(os.Stderr, msg)
 }

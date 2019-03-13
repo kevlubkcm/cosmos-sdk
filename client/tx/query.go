@@ -2,126 +2,139 @@ package tx
 
 import (
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
+	"strings"
 
 	"github.com/gorilla/mux"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	abci "github.com/tendermint/abci/types"
 	ctypes "github.com/tendermint/tendermint/rpc/core/types"
+
+	"github.com/spf13/viper"
 
 	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/context"
+	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/wire"
+	"github.com/cosmos/cosmos-sdk/types/rest"
+	"github.com/cosmos/cosmos-sdk/x/auth"
 )
 
-// Get the default command for a tx query
-func QueryTxCmd(cdc *wire.Codec) *cobra.Command {
+// QueryTxCmd implements the default command for a tx query.
+func QueryTxCmd(cdc *codec.Codec) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "tx [hash]",
 		Short: "Matches this txhash over all committed blocks",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			cliCtx := context.NewCLIContext().WithCodec(cdc)
 
-			// find the key to look up the account
-			hashHexStr := args[0]
-			trustNode := viper.GetBool(client.FlagTrustNode)
-
-			output, err := queryTx(cdc, context.NewCoreContextFromViper(), hashHexStr, trustNode)
+			output, err := queryTx(cdc, cliCtx, args[0])
 			if err != nil {
 				return err
 			}
-			fmt.Println(string(output))
 
-			return nil
+			if output.Empty() {
+				return fmt.Errorf("No transaction found with hash %s", args[0])
+			}
+
+			return cliCtx.PrintOutput(output)
 		},
 	}
 
-	cmd.Flags().StringP(client.FlagNode, "n", "tcp://localhost:46657", "Node to connect to")
-
-	// TODO: change this to false when we can
-	cmd.Flags().Bool(client.FlagTrustNode, true, "Don't verify proofs for responses")
+	cmd.Flags().StringP(client.FlagNode, "n", "tcp://localhost:26657", "Node to connect to")
+	viper.BindPFlag(client.FlagNode, cmd.Flags().Lookup(client.FlagNode))
+	cmd.Flags().Bool(client.FlagTrustNode, false, "Trust connected full node (don't verify proofs for responses)")
+	viper.BindPFlag(client.FlagTrustNode, cmd.Flags().Lookup(client.FlagTrustNode))
 	return cmd
 }
 
-func queryTx(cdc *wire.Codec, ctx context.CoreContext, hashHexStr string, trustNode bool) ([]byte, error) {
+func queryTx(cdc *codec.Codec, cliCtx context.CLIContext, hashHexStr string) (out sdk.TxResponse, err error) {
 	hash, err := hex.DecodeString(hashHexStr)
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 
-	// get the node
-	node, err := ctx.GetNode()
+	node, err := cliCtx.GetNode()
 	if err != nil {
-		return nil, err
+		return out, err
 	}
 
-	res, err := node.Tx(hash, !trustNode)
+	res, err := node.Tx(hash, !cliCtx.TrustNode)
 	if err != nil {
-		return nil, err
-	}
-	info, err := formatTxResult(cdc, res)
-	if err != nil {
-		return nil, err
+		return out, err
 	}
 
-	return json.MarshalIndent(info, "", "  ")
+	if !cliCtx.TrustNode {
+		if err = ValidateTxResult(cliCtx, res); err != nil {
+			return out, err
+		}
+	}
+
+	if out, err = formatTxResult(cdc, res); err != nil {
+		return out, err
+	}
+
+	return out, nil
 }
 
-func formatTxResult(cdc *wire.Codec, res *ctypes.ResultTx) (txInfo, error) {
-	// TODO: verify the proof if requested
+// ValidateTxResult performs transaction verification
+func ValidateTxResult(cliCtx context.CLIContext, res *ctypes.ResultTx) error {
+	if !cliCtx.TrustNode {
+		check, err := cliCtx.Verify(res.Height)
+		if err != nil {
+			return err
+		}
+		err = res.Proof.Validate(check.Header.DataHash)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func formatTxResult(cdc *codec.Codec, res *ctypes.ResultTx) (sdk.TxResponse, error) {
 	tx, err := parseTx(cdc, res.Tx)
 	if err != nil {
-		return txInfo{}, err
+		return sdk.TxResponse{}, err
 	}
 
-	info := txInfo{
-		Height: res.Height,
-		Tx:     tx,
-		Result: res.TxResult,
-	}
-	return info, nil
+	return sdk.NewResponseResultTx(res, tx), nil
 }
 
-// txInfo is used to prepare info to display
-type txInfo struct {
-	Height int64                  `json:"height"`
-	Tx     sdk.Tx                 `json:"tx"`
-	Result abci.ResponseDeliverTx `json:"result"`
-}
+func parseTx(cdc *codec.Codec, txBytes []byte) (sdk.Tx, error) {
+	var tx auth.StdTx
 
-func parseTx(cdc *wire.Codec, txBytes []byte) (sdk.Tx, error) {
-	var tx sdk.StdTx
-	err := cdc.UnmarshalBinary(txBytes, &tx)
+	err := cdc.UnmarshalBinaryLengthPrefixed(txBytes, &tx)
 	if err != nil {
 		return nil, err
 	}
+
 	return tx, nil
 }
 
 // REST
 
-// transaction query REST handler
-func QueryTxRequestHandlerFn(cdc *wire.Codec, ctx context.CoreContext) http.HandlerFunc {
+// QueryTxRequestHandlerFn transaction query REST handler
+func QueryTxRequestHandlerFn(cdc *codec.Codec, cliCtx context.CLIContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		hashHexStr := vars["hash"]
-		trustNode, err := strconv.ParseBool(r.FormValue("trust_node"))
-		// trustNode defaults to true
-		if err != nil {
-			trustNode = true
-		}
 
-		output, err := queryTx(cdc, ctx, hashHexStr, trustNode)
+		output, err := queryTx(cdc, cliCtx, hashHexStr)
 		if err != nil {
-			w.WriteHeader(500)
-			w.Write([]byte(err.Error()))
+			if strings.Contains(err.Error(), hashHexStr) {
+				rest.WriteErrorResponse(w, http.StatusNotFound, err.Error())
+				return
+			}
+			rest.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		w.Write(output)
+
+		if output.Empty() {
+			rest.WriteErrorResponse(w, http.StatusNotFound, fmt.Sprintf("no transaction found with hash %s", hashHexStr))
+		}
+
+		rest.PostProcessResponse(w, cdc, output, cliCtx.Indent)
 	}
 }

@@ -1,15 +1,40 @@
 //nolint
 package version
 
-// when updating these,
-// remember to also update examples/basecoin/tests/cli/rpc.sh
-// TODO improve
+import (
+	"fmt"
+	"runtime"
+)
 
-const Maj = "0"
-const Min = "17"
-const Fix = "5"
+// Variables set by build flags
+var (
+	Commit        = ""
+	Version       = ""
+	VendorDirHash = ""
+	BuildTags     = ""
+)
 
-const Version = "0.17.5"
+type versionInfo struct {
+	CosmosSDK     string `json:"cosmos_sdk"`
+	GitCommit     string `json:"commit"`
+	VendorDirHash string `json:"vendor_hash"`
+	BuildTags     string `json:"build_tags"`
+	GoVersion     string `json:"go"`
+}
 
-// GitCommit set by build flags
-var GitCommit = ""
+func (v versionInfo) String() string {
+	return fmt.Sprintf(`cosmos-sdk: %s
+git commit: %s
+vendor hash: %s
+build tags: %s
+%s`, v.CosmosSDK, v.GitCommit, v.VendorDirHash, v.BuildTags, v.GoVersion)
+}
+
+func newVersionInfo() versionInfo {
+	return versionInfo{
+		Version,
+		Commit,
+		VendorDirHash,
+		BuildTags,
+		fmt.Sprintf("go version %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)}
+}

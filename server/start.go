@@ -1,26 +1,32 @@
 package server
 
 import (
-	"github.com/pkg/errors"
+	"fmt"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/tendermint/abci/server"
+	"github.com/tendermint/tendermint/abci/server"
 
 	tcmd "github.com/tendermint/tendermint/cmd/tendermint/commands"
+	cmn "github.com/tendermint/tendermint/libs/common"
 	"github.com/tendermint/tendermint/node"
-	"github.com/tendermint/tendermint/proxy"
+	"github.com/tendermint/tendermint/p2p"
 	pvm "github.com/tendermint/tendermint/privval"
-	cmn "github.com/tendermint/tmlibs/common"
+	"github.com/tendermint/tendermint/proxy"
 )
 
+// Tendermint full-node start flags
 const (
 	flagWithTendermint = "with-tendermint"
 	flagAddress        = "address"
+	flagTraceStore     = "trace-store"
+	flagPruning        = "pruning"
+	FlagMinGasPrices   = "minimum-gas-prices"
 )
 
-// StartCmd runs the service passed in, either
-// stand-alone, or in-process with tendermint
+// StartCmd runs the service passed in, either stand-alone or in-process with
+// Tendermint.
 func StartCmd(ctx *Context, appCreator AppCreator) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -30,69 +36,116 @@ func StartCmd(ctx *Context, appCreator AppCreator) *cobra.Command {
 				ctx.Logger.Info("Starting ABCI without Tendermint")
 				return startStandAlone(ctx, appCreator)
 			}
+
 			ctx.Logger.Info("Starting ABCI with Tendermint")
-			return startInProcess(ctx, appCreator)
+
+			_, err := startInProcess(ctx, appCreator)
+			return err
 		},
 	}
 
-	// basic flags for abci app
-	cmd.Flags().Bool(flagWithTendermint, true, "run abci app embedded in-process with tendermint")
-	cmd.Flags().String(flagAddress, "tcp://0.0.0.0:46658", "Listen address")
+	// core flags for the ABCI application
+	cmd.Flags().Bool(flagWithTendermint, true, "Run abci app embedded in-process with tendermint")
+	cmd.Flags().String(flagAddress, "tcp://0.0.0.0:26658", "Listen address")
+	cmd.Flags().String(flagTraceStore, "", "Enable KVStore tracing to an output file")
+	cmd.Flags().String(flagPruning, "syncable", "Pruning strategy: syncable, nothing, everything")
+	cmd.Flags().String(
+		FlagMinGasPrices, "",
+		"Minimum gas prices to accept for transactions; Any fee in a tx must meet this minimum (e.g. 0.01photino;0.0001stake)",
+	)
 
-	// AddNodeFlags adds support for all tendermint-specific command line options
+	// add support for all Tendermint-specific command line options
 	tcmd.AddNodeFlags(cmd)
 	return cmd
 }
 
 func startStandAlone(ctx *Context, appCreator AppCreator) error {
-	// Generate the app in the proper dir
 	addr := viper.GetString(flagAddress)
 	home := viper.GetString("home")
-	app, err := appCreator(home, ctx.Logger)
+	traceWriterFile := viper.GetString(flagTraceStore)
+
+	db, err := openDB(home)
+	if err != nil {
+		return err
+	}
+	traceWriter, err := openTraceWriter(traceWriterFile)
 	if err != nil {
 		return err
 	}
 
+	app := appCreator(ctx.Logger, db, traceWriter)
+
 	svr, err := server.NewServer(addr, "socket", app)
 	if err != nil {
-		return errors.Errorf("Error creating listener: %v\n", err)
+		return fmt.Errorf("error creating listener: %v", err)
 	}
-	svr.SetLogger(ctx.Logger.With("module", "abci-server"))
-	svr.Start()
 
-	// Wait forever
-	cmn.TrapSignal(func() {
-		// Cleanup
-		svr.Stop()
+	svr.SetLogger(ctx.Logger.With("module", "abci-server"))
+
+	err = svr.Start()
+	if err != nil {
+		cmn.Exit(err.Error())
+	}
+
+	// wait forever
+	cmn.TrapSignal(ctx.Logger, func() {
+		// cleanup
+		err = svr.Stop()
+		if err != nil {
+			cmn.Exit(err.Error())
+		}
 	})
 	return nil
 }
 
-func startInProcess(ctx *Context, appCreator AppCreator) error {
+func startInProcess(ctx *Context, appCreator AppCreator) (*node.Node, error) {
 	cfg := ctx.Config
 	home := cfg.RootDir
-	app, err := appCreator(home, ctx.Logger)
+	traceWriterFile := viper.GetString(flagTraceStore)
+
+	db, err := openDB(home)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	traceWriter, err := openTraceWriter(traceWriterFile)
+	if err != nil {
+		return nil, err
 	}
 
-	// Create & start tendermint node
-	n, err := node.NewNode(cfg,
-		pvm.LoadOrGenFilePV(cfg.PrivValidatorFile()),
+	app := appCreator(ctx.Logger, db, traceWriter)
+
+	nodeKey, err := p2p.LoadOrGenNodeKey(cfg.NodeKeyFile())
+	if err != nil {
+		return nil, err
+	}
+
+	UpgradeOldPrivValFile(cfg)
+	// create & start tendermint node
+	tmNode, err := node.NewNode(
+		cfg,
+		pvm.LoadOrGenFilePV(cfg.PrivValidatorKeyFile(), cfg.PrivValidatorStateFile()),
+		nodeKey,
 		proxy.NewLocalClientCreator(app),
 		node.DefaultGenesisDocProviderFunc(cfg),
 		node.DefaultDBProvider,
-		ctx.Logger.With("module", "node"))
+		node.DefaultMetricsProvider(cfg.Instrumentation),
+		ctx.Logger.With("module", "node"),
+	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	err = n.Start()
+	err = tmNode.Start()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Trap signal, run forever.
-	n.RunForever()
-	return nil
+	TrapSignal(func() {
+		if tmNode.IsRunning() {
+			_ = tmNode.Stop()
+		}
+	})
+
+	// run forever (the node will not be returned)
+	select {}
 }

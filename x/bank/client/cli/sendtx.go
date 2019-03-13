@@ -1,17 +1,17 @@
 package cli
 
 import (
-	"encoding/hex"
 	"fmt"
 
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-
+	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/context"
+	"github.com/cosmos/cosmos-sdk/client/utils"
+	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/wire"
-	authcmd "github.com/cosmos/cosmos-sdk/x/auth/client/cli"
-	"github.com/cosmos/cosmos-sdk/x/bank/client"
+	authtxb "github.com/cosmos/cosmos-sdk/x/auth/client/txbuilder"
+	"github.com/cosmos/cosmos-sdk/x/bank"
+
+	"github.com/spf13/cobra"
 )
 
 const (
@@ -19,46 +19,48 @@ const (
 	flagAmount = "amount"
 )
 
-// SendTxCommand will create a send tx and sign it with the given key
-func SendTxCmd(cdc *wire.Codec) *cobra.Command {
+// SendTxCmd will create a send tx and sign it with the given key.
+func SendTxCmd(cdc *codec.Codec) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "send",
+		Use:   "send [to_address] [amount]",
 		Short: "Create and sign a send tx",
+		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.NewCoreContextFromViper().WithDecoder(authcmd.GetAccountDecoder(cdc))
+			txBldr := authtxb.NewTxBuilderFromCLI().WithTxEncoder(utils.GetTxEncoder(cdc))
+			cliCtx := context.NewCLIContext().
+				WithCodec(cdc).
+				WithAccountDecoder(cdc)
 
-			// get the from/to address
-			from, err := ctx.GetFromAddress()
+			if err := cliCtx.EnsureAccountExists(); err != nil {
+				return err
+			}
+
+			to, err := sdk.AccAddressFromBech32(args[0])
 			if err != nil {
 				return err
 			}
 
-			toStr := viper.GetString(flagTo)
-			bz, err := hex.DecodeString(toStr)
+			// parse coins trying to be sent
+			coins, err := sdk.ParseCoins(args[1])
 			if err != nil {
 				return err
 			}
-			to := sdk.Address(bz)
 
-			// parse coins
-			amount := viper.GetString(flagAmount)
-			coins, err := sdk.ParseCoins(amount)
+			from := cliCtx.GetFromAddress()
+			account, err := cliCtx.GetAccount(from)
 			if err != nil {
 				return err
+			}
+
+			// ensure account has enough coins
+			if !account.GetCoins().IsAllGTE(coins) {
+				return fmt.Errorf("address %s doesn't have enough coins to pay for this transaction", from)
 			}
 
 			// build and sign the transaction, then broadcast to Tendermint
-			msg := client.BuildMsg(from, to, coins)
-			res, err := ctx.EnsureSignBuildBroadcast(ctx.FromAddressName, msg, cdc)
-			if err != nil {
-				return err
-			}
-			fmt.Printf("Committed at block %d. Hash: %s\n", res.Height, res.Hash.String())
-			return nil
+			msg := bank.NewMsgSend(from, to, coins)
+			return utils.GenerateOrBroadcastMsgs(cliCtx, txBldr, []sdk.Msg{msg}, false)
 		},
 	}
-
-	cmd.Flags().String(flagTo, "", "Address to send coins")
-	cmd.Flags().String(flagAmount, "", "Amount of coins to send")
-	return cmd
+	return client.PostCommands(cmd)[0]
 }

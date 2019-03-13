@@ -1,4 +1,3 @@
-//nolint
 package bank
 
 import (
@@ -7,53 +6,28 @@ import (
 
 // Bank errors reserve 100 ~ 199.
 const (
-	DefaultCodespace sdk.CodespaceType = 2
+	DefaultCodespace sdk.CodespaceType = "bank"
 
-	CodeInvalidInput  sdk.CodeType = 101
-	CodeInvalidOutput sdk.CodeType = 102
+	CodeSendDisabled         sdk.CodeType = 101
+	CodeInvalidInputsOutputs sdk.CodeType = 102
 )
 
-// NOTE: Don't stringer this, we'll put better messages in later.
-func codeToDefaultMsg(code sdk.CodeType) string {
-	switch code {
-	case CodeInvalidInput:
-		return "Invalid input coins"
-	case CodeInvalidOutput:
-		return "Invalid output coins"
-	default:
-		return sdk.CodeToDefaultMsg(code)
-	}
-}
-
-//----------------------------------------
-// Error constructors
-
-func ErrInvalidInput(codespace sdk.CodespaceType, msg string) sdk.Error {
-	return newError(codespace, CodeInvalidInput, msg)
-}
-
+// ErrNoInputs is an error
 func ErrNoInputs(codespace sdk.CodespaceType) sdk.Error {
-	return newError(codespace, CodeInvalidInput, "")
+	return sdk.NewError(codespace, CodeInvalidInputsOutputs, "no inputs to send transacction")
 }
 
-func ErrInvalidOutput(codespace sdk.CodespaceType, msg string) sdk.Error {
-	return newError(codespace, CodeInvalidOutput, msg)
-}
-
+// ErrNoOutputs is an error
 func ErrNoOutputs(codespace sdk.CodespaceType) sdk.Error {
-	return newError(codespace, CodeInvalidOutput, "")
+	return sdk.NewError(codespace, CodeInvalidInputsOutputs, "no outputs to send transaction")
 }
 
-//----------------------------------------
-
-func msgOrDefaultMsg(msg string, code sdk.CodeType) string {
-	if msg != "" {
-		return msg
-	}
-	return codeToDefaultMsg(code)
+// ErrInputOutputMismatch is an error
+func ErrInputOutputMismatch(codespace sdk.CodespaceType) sdk.Error {
+	return sdk.NewError(codespace, CodeInvalidInputsOutputs, "sum inputs != sum outputs")
 }
 
-func newError(codespace sdk.CodespaceType, code sdk.CodeType, msg string) sdk.Error {
-	msg = msgOrDefaultMsg(msg, code)
-	return sdk.NewError(codespace, code, msg)
+// ErrSendDisabled is an error
+func ErrSendDisabled(codespace sdk.CodespaceType) sdk.Error {
+	return sdk.NewError(codespace, CodeSendDisabled, "send transactions are currently disabled")
 }

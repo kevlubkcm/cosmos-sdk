@@ -1,103 +1,66 @@
 package rest
 
 import (
-	"encoding/hex"
-	"encoding/json"
-	"io/ioutil"
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/tendermint/go-crypto/keys"
 
 	"github.com/cosmos/cosmos-sdk/client/context"
+	clientrest "github.com/cosmos/cosmos-sdk/client/rest"
+	"github.com/cosmos/cosmos-sdk/codec"
+	"github.com/cosmos/cosmos-sdk/crypto/keys"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/wire"
-	"github.com/cosmos/cosmos-sdk/x/bank/client"
+	"github.com/cosmos/cosmos-sdk/types/rest"
+
+	"github.com/cosmos/cosmos-sdk/x/bank"
 )
 
 // RegisterRoutes - Central function to define routes that get registered by the main application
-func RegisterRoutes(ctx context.CoreContext, r *mux.Router, cdc *wire.Codec, kb keys.Keybase) {
-	r.HandleFunc("/accounts/{address}/send", SendRequestHandlerFn(cdc, kb, ctx)).Methods("POST")
+func RegisterRoutes(cliCtx context.CLIContext, r *mux.Router, cdc *codec.Codec, kb keys.Keybase) {
+	r.HandleFunc("/bank/accounts/{address}/transfers", SendRequestHandlerFn(cdc, kb, cliCtx)).Methods("POST")
 }
 
-type sendBody struct {
-	// fees is not used currently
-	// Fees             sdk.Coin  `json="fees"`
-	Amount           sdk.Coins `json:"amount"`
-	LocalAccountName string    `json:"name"`
-	Password         string    `json:"password"`
-	ChainID          string    `json:"chain_id"`
-	Sequence         int64     `json:"sequence"`
+// SendReq defines the properties of a send request's body.
+type SendReq struct {
+	BaseReq rest.BaseReq `json:"base_req"`
+	Amount  sdk.Coins    `json:"amount"`
 }
 
-// SendRequestHandlerFn - http request handler to send coins to a address
-func SendRequestHandlerFn(cdc *wire.Codec, kb keys.Keybase, ctx context.CoreContext) http.HandlerFunc {
+var msgCdc = codec.New()
+
+func init() {
+	bank.RegisterCodec(msgCdc)
+}
+
+// SendRequestHandlerFn - http request handler to send coins to a address.
+func SendRequestHandlerFn(cdc *codec.Codec, kb keys.Keybase, cliCtx context.CLIContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// collect data
 		vars := mux.Vars(r)
-		address := vars["address"]
+		bech32Addr := vars["address"]
 
-		var m sendBody
-		body, err := ioutil.ReadAll(r.Body)
+		toAddr, err := sdk.AccAddressFromBech32(bech32Addr)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
+			rest.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		err = json.Unmarshal(body, &m)
+
+		var req SendReq
+		if !rest.ReadRESTReq(w, r, cdc, &req) {
+			return
+		}
+
+		req.BaseReq = req.BaseReq.Sanitize()
+		if !req.BaseReq.ValidateBasic(w) {
+			return
+		}
+
+		fromAddr, err := sdk.AccAddressFromBech32(req.BaseReq.From)
 		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
+			rest.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
-		info, err := kb.Get(m.LocalAccountName)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		bz, err := hex.DecodeString(address)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
-			return
-		}
-		to := sdk.Address(bz)
-
-		// build message
-		msg := client.BuildMsg(info.PubKey.Address(), to, m.Amount)
-		if err != nil { // XXX rechecking same error ?
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		// sign
-		ctx = ctx.WithSequence(m.Sequence)
-		txBytes, err := ctx.SignAndBuild(m.LocalAccountName, m.Password, msg, cdc)
-		if err != nil {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		// send
-		res, err := ctx.BroadcastTx(txBytes)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		output, err := json.MarshalIndent(res, "", "  ")
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte(err.Error()))
-			return
-		}
-
-		w.Write(output)
+		msg := bank.NewMsgSend(fromAddr, toAddr, req.Amount)
+		clientrest.WriteGenerateStdTxResponse(w, cdc, cliCtx, req.BaseReq, []sdk.Msg{msg})
 	}
 }

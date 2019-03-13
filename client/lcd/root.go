@@ -1,87 +1,160 @@
 package lcd
 
 import (
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"os"
 
 	"github.com/gorilla/mux"
+	"github.com/rakyll/statik/fs"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-	"github.com/tendermint/tmlibs/log"
+	"github.com/tendermint/tendermint/libs/log"
+	rpcserver "github.com/tendermint/tendermint/rpc/lib/server"
 
-	tmserver "github.com/tendermint/tendermint/rpc/lib/server"
-	cmn "github.com/tendermint/tmlibs/common"
-
-	client "github.com/cosmos/cosmos-sdk/client"
+	"github.com/cosmos/cosmos-sdk/client"
 	"github.com/cosmos/cosmos-sdk/client/context"
-	keys "github.com/cosmos/cosmos-sdk/client/keys"
-	rpc "github.com/cosmos/cosmos-sdk/client/rpc"
-	tx "github.com/cosmos/cosmos-sdk/client/tx"
-	version "github.com/cosmos/cosmos-sdk/version"
-	"github.com/cosmos/cosmos-sdk/wire"
-	auth "github.com/cosmos/cosmos-sdk/x/auth/client/rest"
-	bank "github.com/cosmos/cosmos-sdk/x/bank/client/rest"
-	ibc "github.com/cosmos/cosmos-sdk/x/ibc/client/rest"
+	"github.com/cosmos/cosmos-sdk/codec"
+	keybase "github.com/cosmos/cosmos-sdk/crypto/keys"
+	"github.com/cosmos/cosmos-sdk/server"
+
+	// Import statik for light client stuff
+	_ "github.com/cosmos/cosmos-sdk/client/lcd/statik"
 )
 
-const (
-	flagListenAddr = "laddr"
-	flagCORS       = "cors"
-)
+// RestServer represents the Light Client Rest server
+type RestServer struct {
+	Mux     *mux.Router
+	CliCtx  context.CLIContext
+	KeyBase keybase.Keybase
+	Cdc     *codec.Codec
 
-// ServeCommand will generate a long-running rest server
-// (aka Light Client Daemon) that exposes functionality similar
-// to the cli, but over rest
-func ServeCommand(cdc *wire.Codec) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "rest-server",
-		Short: "Start LCD (light-client daemon), a local REST server",
-		RunE:  startRESTServerFn(cdc),
-	}
-	cmd.Flags().StringP(flagListenAddr, "a", "tcp://localhost:1317", "Address for server to listen on")
-	cmd.Flags().String(flagCORS, "", "Set to domains that can make CORS requests (* for all)")
-	cmd.Flags().StringP(client.FlagChainID, "c", "", "ID of chain we connect to")
-	cmd.Flags().StringP(client.FlagNode, "n", "tcp://localhost:46657", "Node to connect to")
-	return cmd
+	log         log.Logger
+	listener    net.Listener
+	fingerprint string
 }
 
-func startRESTServerFn(cdc *wire.Codec) func(cmd *cobra.Command, args []string) error {
-	return func(cmd *cobra.Command, args []string) error {
-		listenAddr := viper.GetString(flagListenAddr)
-		handler := createHandler(cdc)
-		logger := log.NewTMLogger(log.NewSyncWriter(os.Stdout)).
-			With("module", "rest-server")
-		listener, err := tmserver.StartHTTPServer(listenAddr, handler, logger)
+// NewRestServer creates a new rest server instance
+func NewRestServer(cdc *codec.Codec) *RestServer {
+	r := mux.NewRouter()
+	cliCtx := context.NewCLIContext().WithCodec(cdc).WithAccountDecoder(cdc)
+	logger := log.NewTMLogger(log.NewSyncWriter(os.Stdout)).With("module", "rest-server")
+
+	return &RestServer{
+		Mux:    r,
+		CliCtx: cliCtx,
+		Cdc:    cdc,
+
+		log: logger,
+	}
+}
+
+// Start starts the rest server
+func (rs *RestServer) Start(listenAddr string, sslHosts string,
+	certFile string, keyFile string, maxOpen int, secure bool) (err error) {
+
+	server.TrapSignal(func() {
+		err := rs.listener.Close()
+		rs.log.Error("error closing listener", "err", err)
+	})
+
+	rs.listener, err = rpcserver.Listen(
+		listenAddr,
+		rpcserver.Config{MaxOpenConnections: maxOpen},
+	)
+	if err != nil {
+		return
+	}
+	rs.log.Info(fmt.Sprintf("Starting Gaia Lite REST service (chain-id: %q)...",
+		viper.GetString(client.FlagChainID)))
+
+	// launch rest-server in insecure mode
+	if !secure {
+		return rpcserver.StartHTTPServer(rs.listener, rs.Mux, rs.log)
+	}
+
+	// handle certificates
+	if certFile != "" {
+		// validateCertKeyFiles() is needed to work around tendermint/tendermint#2460
+		if err := validateCertKeyFiles(certFile, keyFile); err != nil {
+			return err
+		}
+
+		//  cert/key pair is provided, read the fingerprint
+		rs.fingerprint, err = fingerprintFromFile(certFile)
+		if err != nil {
+			return err
+		}
+	} else {
+		// if certificate is not supplied, generate a self-signed one
+		certFile, keyFile, rs.fingerprint, err = genCertKeyFilesAndReturnFingerprint(sslHosts)
 		if err != nil {
 			return err
 		}
 
-		// Wait forever and cleanup
-		cmn.TrapSignal(func() {
-			err := listener.Close()
-			logger.Error("Error closing listener", "err", err)
-		})
-		return nil
+		defer func() {
+			os.Remove(certFile)
+			os.Remove(keyFile)
+		}()
 	}
+
+	rs.log.Info(rs.fingerprint)
+	return rpcserver.StartHTTPAndTLSServer(
+		rs.listener,
+		rs.Mux,
+		certFile, keyFile,
+		rs.log,
+	)
 }
 
-func createHandler(cdc *wire.Codec) http.Handler {
-	r := mux.NewRouter()
-	r.HandleFunc("/version", version.RequestHandler).Methods("GET")
+// ServeCommand will start a Gaia Lite REST service as a blocking process. It
+// takes a codec to create a RestServer object and a function to register all
+// necessary routes.
+func ServeCommand(cdc *codec.Codec, registerRoutesFn func(*RestServer)) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "rest-server",
+		Short: "Start LCD (light-client daemon), a local REST server",
+		RunE: func(cmd *cobra.Command, args []string) (err error) {
+			rs := NewRestServer(cdc)
 
-	kb, err := keys.GetKeyBase() //XXX
+			registerRoutesFn(rs)
+
+			// Start the rest server and return error if one exists
+			err = rs.Start(
+				viper.GetString(client.FlagListenAddr),
+				viper.GetString(client.FlagSSLHosts),
+				viper.GetString(client.FlagSSLCertFile),
+				viper.GetString(client.FlagSSLKeyFile),
+				viper.GetInt(client.FlagMaxOpenConnections),
+				viper.GetBool(client.FlagTLS))
+
+			return err
+		},
+	}
+
+	return client.RegisterRestServerFlags(cmd)
+}
+
+func (rs *RestServer) registerSwaggerUI() {
+	statikFS, err := fs.New()
 	if err != nil {
 		panic(err)
 	}
+	staticServer := http.FileServer(statikFS)
+	rs.Mux.PathPrefix("/swagger-ui/").Handler(http.StripPrefix("/swagger-ui/", staticServer))
+}
 
-	ctx := context.NewCoreContextFromViper()
-
-	// TODO make more functional? aka r = keys.RegisterRoutes(r)
-	keys.RegisterRoutes(r)
-	rpc.RegisterRoutes(ctx, r)
-	tx.RegisterRoutes(ctx, r, cdc)
-	auth.RegisterRoutes(ctx, r, cdc, "acc")
-	bank.RegisterRoutes(ctx, r, cdc, kb)
-	ibc.RegisterRoutes(ctx, r, cdc, kb)
-	return r
+func validateCertKeyFiles(certFile, keyFile string) error {
+	if keyFile == "" {
+		return errors.New("a key file is required")
+	}
+	if _, err := os.Stat(certFile); err != nil {
+		return err
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return err
+	}
+	return nil
 }

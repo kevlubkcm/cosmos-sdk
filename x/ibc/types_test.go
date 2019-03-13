@@ -3,7 +3,7 @@ package ibc
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
 )
@@ -23,21 +23,21 @@ func TestIBCPacketValidation(t *testing.T) {
 	for i, tc := range cases {
 		err := tc.packet.ValidateBasic()
 		if tc.valid {
-			assert.Nil(t, err, "%d: %+v", i, err)
+			require.Nil(t, err, "%d: %+v", i, err)
 		} else {
-			assert.NotNil(t, err, "%d", i)
+			require.NotNil(t, err, "%d", i)
 		}
 	}
 }
 
 // -------------------------------
-// IBCTransferMsg Tests
+// MsgIBCTransfer Tests
 
 func TestIBCTransferMsg(t *testing.T) {
 	packet := constructIBCPacket(true)
-	msg := IBCTransferMsg{packet}
+	msg := MsgIBCTransfer{packet}
 
-	assert.Equal(t, msg.Type(), "ibc")
+	require.Equal(t, msg.Route(), "ibc")
 }
 
 func TestIBCTransferMsgValidation(t *testing.T) {
@@ -46,30 +46,30 @@ func TestIBCTransferMsgValidation(t *testing.T) {
 
 	cases := []struct {
 		valid bool
-		msg   IBCTransferMsg
+		msg   MsgIBCTransfer
 	}{
-		{true, IBCTransferMsg{validPacket}},
-		{false, IBCTransferMsg{invalidPacket}},
+		{true, MsgIBCTransfer{validPacket}},
+		{false, MsgIBCTransfer{invalidPacket}},
 	}
 
 	for i, tc := range cases {
 		err := tc.msg.ValidateBasic()
 		if tc.valid {
-			assert.Nil(t, err, "%d: %+v", i, err)
+			require.Nil(t, err, "%d: %+v", i, err)
 		} else {
-			assert.NotNil(t, err, "%d", i)
+			require.NotNil(t, err, "%d", i)
 		}
 	}
 }
 
 // -------------------------------
-// IBCReceiveMsg Tests
+// MsgIBCReceive Tests
 
 func TestIBCReceiveMsg(t *testing.T) {
 	packet := constructIBCPacket(true)
-	msg := IBCReceiveMsg{packet, sdk.Address([]byte("relayer")), 0}
+	msg := MsgIBCReceive{packet, sdk.AccAddress([]byte("relayer")), 0}
 
-	assert.Equal(t, msg.Type(), "ibc")
+	require.Equal(t, msg.Route(), "ibc")
 }
 
 func TestIBCReceiveMsgValidation(t *testing.T) {
@@ -78,18 +78,18 @@ func TestIBCReceiveMsgValidation(t *testing.T) {
 
 	cases := []struct {
 		valid bool
-		msg   IBCReceiveMsg
+		msg   MsgIBCReceive
 	}{
-		{true, IBCReceiveMsg{validPacket, sdk.Address([]byte("relayer")), 0}},
-		{false, IBCReceiveMsg{invalidPacket, sdk.Address([]byte("relayer")), 0}},
+		{true, MsgIBCReceive{validPacket, sdk.AccAddress([]byte("relayer")), 0}},
+		{false, MsgIBCReceive{invalidPacket, sdk.AccAddress([]byte("relayer")), 0}},
 	}
 
 	for i, tc := range cases {
 		err := tc.msg.ValidateBasic()
 		if tc.valid {
-			assert.Nil(t, err, "%d: %+v", i, err)
+			require.Nil(t, err, "%d: %+v", i, err)
 		} else {
-			assert.NotNil(t, err, "%d", i)
+			require.NotNil(t, err, "%d", i)
 		}
 	}
 }
@@ -98,9 +98,9 @@ func TestIBCReceiveMsgValidation(t *testing.T) {
 // Helpers
 
 func constructIBCPacket(valid bool) IBCPacket {
-	srcAddr := sdk.Address([]byte("source"))
-	destAddr := sdk.Address([]byte("destination"))
-	coins := sdk.Coins{{"atom", 10}}
+	srcAddr := sdk.AccAddress([]byte("source"))
+	destAddr := sdk.AccAddress([]byte("destination"))
+	coins := sdk.Coins{sdk.NewInt64Coin("atom", 10)}
 	srcChain := "source-chain"
 	destChain := "dest-chain"
 

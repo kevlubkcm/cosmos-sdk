@@ -3,12 +3,10 @@ package types
 import (
 	"testing"
 
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPrefixEndBytes(t *testing.T) {
-	assert := assert.New(t)
-
 	var testCases = []struct {
 		prefix   []byte
 		expected []byte
@@ -24,6 +22,17 @@ func TestPrefixEndBytes(t *testing.T) {
 
 	for _, test := range testCases {
 		end := PrefixEndBytes(test.prefix)
-		assert.Equal(test.expected, end)
+		require.Equal(t, test.expected, end)
 	}
+}
+
+func TestCommitID(t *testing.T) {
+	var empty CommitID
+	require.True(t, empty.IsZero())
+
+	var nonempty = CommitID{
+		Version: 1,
+		Hash:    []byte("testhash"),
+	}
+	require.False(t, nonempty.IsZero())
 }
