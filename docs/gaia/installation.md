@@ -30,7 +30,8 @@ SETX PATH "%PATH%;%GOBIN%"
 
 ::: tip
 For Windows it is a little harder to find the proper build tools. 
-We have found [Win-builds](http://win-builds.org/doku.php/download_and_installation_from_windows) to be a pretty convenient package)
+For GCC, we have found [Win-builds](http://win-builds.org/doku.php/download_and_installation_from_windows) to be a pretty convenient package).
+For Make, [gnuwin32](http://gnuwin32.sourceforge.net/packages/make.htm) works.
 :::
 
 Next, let's install the latest version of Gaia. Here we'll use the `master` branch, which contains the latest stable release.
