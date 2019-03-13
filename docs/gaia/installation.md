@@ -13,11 +13,25 @@ echo "export GOBIN=$GOPATH/bin" >> ~/.bash_profile
 echo "export PATH=$PATH:$GOBIN" >> ~/.bash_profile
 ```
 
+On Windows standard command prompt (ie not Power Shell):
+```
+mkdir "%HOME%\go\bin"
+SETX GOPATH "%HOME%\go"
+SETX GOBIN "%GOPATH%\bin"
+SETX PATH "%PATH%;%GOBIN%"
+```
+(double quotes are necessary to prevent issues with spaces in directory names)
+
 ::: tip
 **Go 1.11.5+** is required for the Cosmos SDK.
 :::
 
 ### Install the binaries
+
+::: tip
+For Windows it is a little harder to find the proper build tools. 
+We have found [Win-builds](http://win-builds.org/doku.php/download_and_installation_from_windows) to be a pretty convenient package)
+:::
 
 Next, let's install the latest version of Gaia. Here we'll use the `master` branch, which contains the latest stable release.
 If necessary, make sure you `git checkout` the correct
